@@ -109,10 +109,40 @@ function handleHTTP(req, res) {
     return;
   }
 
+  // ── Serve Service Worker — must be at root scope ───────────────
+  // IMPORTANT headers:
+  //   Service-Worker-Allowed: /  → allows SW to control all paths
+  //   Cache-Control: no-store    → browser must always fetch fresh SW
+  //   Content-Type: application/javascript  → required by spec
+  if (pathname === '/sw.js') {
+    const f = path.join(__dirname, 'sw.js');
+    if (!fs.existsSync(f)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('sw.js not found — make sure sw.js is in the same folder as server.js');
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type'           : 'application/javascript; charset=utf-8',
+      'Service-Worker-Allowed' : '/',
+      'Cache-Control'          : 'no-store, no-cache',
+    });
+    fs.createReadStream(f).pipe(res);
+    return;
+  }
+
+  // ── PWA icons — generated as inline SVG so no image files needed ─
+  if (pathname === '/icon-192.png' || pathname === '/icon-96.png') {
+    const size = pathname === '/icon-192.png' ? 192 : 96;
+    const fontSize = Math.round(size * 0.55);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="${Math.round(size*0.2)}" fill="#7c6aff"/><text y="${Math.round(size*0.72)}" x="${Math.round(size*0.13)}" font-size="${fontSize}">📡</text></svg>`;
+    // Return as SVG (browsers accept this for PWA icons)
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
+    res.end(svg);
+    return;
+  }
+
   // ── /api/config — client calls this to auto-discover WS URL ────
   if (pathname === '/api/config') {
-    // Read IP from Host header so mesh/multi-router devices always
-    // get the IP they actually used to reach us
     const hostHeader = req.headers.host || `localhost:${HTTP_PORT}`;
     const hostIP     = hostHeader.split(':')[0];
     const wsProto    = HAS_CERTS ? 'wss'   : 'ws';
@@ -123,7 +153,7 @@ function handleHTTP(req, res) {
       httpBase : `${httpProto}://${hostIP}:${HTTP_PORT}`,
       stunUrl  : `stun:${hostIP}:${STUN_PORT}`,
       isHttps  : HAS_CERTS,
-      version  : 8,
+      version  : 9,
     }));
     return;
   }
@@ -146,7 +176,7 @@ function handleHTTP(req, res) {
     let received = 0, aborted = false;
 
     req.on('data', chunk => {
-      if (aborted) return;  // BUG FIX: don't process data after abort
+      if (aborted) return;
       received += chunk.length;
       if (received > MAX_UPLOAD_BYTES) {
         aborted = true;
@@ -160,7 +190,7 @@ function handleHTTP(req, res) {
     });
 
     req.on('end', () => {
-      if (aborted) return;  // BUG FIX: don't send success after abort
+      if (aborted) return;
       stream.end();
       const host  = req.headers.host || `localhost:${HTTP_PORT}`;
       const proto = HAS_CERTS ? 'https' : 'http';
@@ -190,7 +220,6 @@ function handleHTTP(req, res) {
 
   // ── /uploads/:file — serve uploaded files ──────────────────────
   if (pathname.startsWith('/uploads/')) {
-    // Security: prevent path traversal
     const normalized = path.normalize(pathname).replace(/^(\.\.[\\/])+/, '');
     const filePath   = path.join(__dirname, normalized);
     if (!filePath.startsWith(UPLOADS_DIR + path.sep) && filePath !== UPLOADS_DIR) {
@@ -200,7 +229,7 @@ function handleHTTP(req, res) {
       res.writeHead(404); res.end('Not found'); return;
     }
     const stat    = fs.statSync(filePath);
-    const mime    = getMime(filePath);  // BUG FIX: serve with correct Content-Type
+    const mime    = getMime(filePath);
     const headers = {
       'Content-Length' : stat.size,
       'Content-Type'   : mime,
@@ -244,12 +273,11 @@ wss.on('connection', (ws, req) => {
   const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   let peerId = null;
 
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('pong', () => { ws.missedPings = 0; });  // reset on pong (handled above too)
 
   ws.on('message', rawBuf => {
     const raw = rawBuf.toString();
-    ws.isAlive = true;
+    ws.missedPings = 0;  // any message from client = connection is alive
 
     // Client-side ping for application-level keepalive
     if (raw === '__ping__') { try { ws.send('__pong__'); } catch {} return; }
@@ -293,6 +321,14 @@ wss.on('connection', (ws, req) => {
         if (Array.isArray(msg.members))
           msg.members.filter(id => id !== peerId && peers.has(id)).forEach(id => sendTo(id, msg));
         break;
+
+      // sw-direct: page sends a message via WS as fallback when WebRTC
+      // data channel is unavailable (e.g. peer's tab is backgrounded).
+      // Server relays it to the target peer — the peer's SW picks it up.
+      case 'sw-direct':
+        if (msg.to && peers.has(msg.to))
+          sendTo(msg.to, { ...msg, from: peerId });
+        break;
     }
   });
 
@@ -312,15 +348,20 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Native WS heartbeat — terminates silently-dead connections
-// Essential for WiFi/mesh/ethernet where TCP keepalive may be suppressed
+// Native WS heartbeat — terminates silently-dead connections.
+// Interval is 60 s (was 30 s) so that mobile browsers throttled to
+// fire timers once per minute don't get their connections killed
+// while the tab is in the background.
+// Two consecutive missed pings (missedPings >= 2) before termination,
+// giving ~120 s of tolerance — enough for any background freeze.
 const heartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (!ws.isAlive) { ws.terminate(); return; }
-    ws.isAlive = false;
+    if (ws.missedPings >= 2) { ws.terminate(); return; }
+    ws.missedPings = (ws.missedPings || 0) + 1;
     try { ws.ping(); } catch {}
   });
-}, 30000);
+}, 60000);
+wss.on('connection', ws => { ws.missedPings = 0; ws.on('pong', () => { ws.missedPings = 0; }); });
 wss.on('close', () => clearInterval(heartbeat));
 
 // ══════════════════════════════════════════════════════════════════
@@ -396,7 +437,7 @@ webServer.on('listening', () => {
 
   console.log('\n');
   console.log('  ╔══════════════════════════════════════════════════════════╗');
-  console.log('  ║         LanLink v8 — Offline LAN Messenger              ║');
+  console.log('  ║         LanLink v9 — Offline LAN Messenger              ║');
   console.log(`  ║  ${HAS_CERTS ? '🔒 HTTPS+WSS — calls ENABLED on all devices!   ' : '🌐 HTTP+WS  — text & files OK; add certs for calls'}  ║`);
   console.log('  ╚══════════════════════════════════════════════════════════╝\n');
 

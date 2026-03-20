@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LanLink">
+<meta name="theme-color" content="#0a0a0f">
+<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;LanLink&quot;,&quot;short_name&quot;:&quot;LanLink&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0f&quot;,&quot;theme_color&quot;:&quot;%230a0a0f&quot;,&quot;start_url&quot;:&quot;/&quot;,&quot;icons&quot;:[{&quot;src&quot;:&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%237c6aff'/%3E%3Ctext y='.9em' font-size='80' x='10'%3E📡%3C/text%3E%3C/svg%3E&quot;,&quot;sizes&quot;:&quot;any&quot;,&quot;type&quot;:&quot;image/svg+xml&quot;}]}">
 <title>LanLink — Offline LAN Chat</title>
 <style>
 :root {
@@ -543,8 +547,9 @@ function applyICEConfig(stunUrl) {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────
-const CLIENT_PING_MS    = 25000;
-const PONG_TIMEOUT_MS   = 20000;
+const CLIENT_PING_MS    = 25000;   // send __ping__ every 25s
+const PONG_TIMEOUT_MS   = 25000;   // wait 25s for pong before forcing reconnect
+                                    // (was 12s — too aggressive on slow WiFi/mobile wake)
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS  = 30000;
 const DB_NAME           = 'LanLinkDB';
@@ -656,6 +661,7 @@ function saveGroupsToStorage(){
 }
 function clearAllData(){
   if(!confirm('⚠️ Delete all history and profile? Cannot be undone.'))return;
+  swDisconnect();   // Stop SW background connection before wiping state
   [PROFILE_KEY,PEERS_CACHE_KEY,GROUPS_KEY].forEach(k=>localStorage.removeItem(k));
   if(db){try{db.transaction('conversations','readwrite').objectStore('conversations').clear();}catch{}}
   location.reload();
@@ -679,10 +685,8 @@ function playMsgSound(){playTone(600,'sine',.15,.2);setTimeout(()=>playTone(820,
 let _ringTimer;
 function startRingtone(){const r=()=>{playTone(400,'sine',.2,.25);setTimeout(()=>playTone(520,'sine',.2,.2),220);};r();_ringTimer=setInterval(r,1600);}
 function stopRingtone(){clearInterval(_ringTimer);}
-function showPush(title,body){
-  if(Notification.permission==='granted'&&document.visibilityState!=='visible')
-    try{new Notification(title,{body,icon:'📡'});}catch{}
-}
+
+
 
 // ── Setup screen ──────────────────────────────────────────────────────
 document.querySelectorAll('.avatar-opt').forEach(el=>{
@@ -737,6 +741,20 @@ async function runDiag(){
   lines.push(window.isSecureContext?OK('HTTPS — calls will work'):WRN('Plain HTTP — calls blocked; add certs for HTTPS'));
   lines.push(typeof RTCPeerConnection!=='undefined'?OK('WebRTC supported'):ERR('WebRTC not supported'));
   lines.push(db?OK('IndexedDB — history will persist'):WRN('IndexedDB unavailable'));
+  lines.push('');
+  // Service Worker + notification status
+  if('serviceWorker' in navigator){
+    const sw=await navigator.serviceWorker.getRegistration('/').catch(()=>null);
+    if(sw&&sw.active) lines.push(OK('Service Worker active — background messages enabled'));
+    else if(sw) lines.push(WRN(`Service Worker registered but state: ${sw.installing?'installing':sw.waiting?'waiting':'unknown'}`));
+    else lines.push(WRN('Service Worker not registered yet — join the network first'));
+  } else {
+    lines.push(WRN('Service Worker not supported in this browser (background notifications unavailable)'));
+  }
+  const notifStatus=Notification.permission;
+  if(notifStatus==='granted') lines.push(OK('Notification permission granted'));
+  else if(notifStatus==='denied') lines.push(ERR('Notification permission DENIED — allow in browser settings'));
+  else lines.push(WRN('Notification permission not yet granted — you will be asked when you Join'));
   out.textContent=lines.join('\n');
 }
 async function testConn(){
@@ -765,11 +783,188 @@ function joinNetwork(){
     App.serverBase=isWSS?url.replace(/^wss:\/\//,'https://'):url.replace(/^ws:\/\//,'http://').replace(/:(\d+)$/,(_,p)=>':'+(p==='8765'?'8080':p));
   }
   saveProfile();
-  if(Notification.permission==='default')Notification.requestPermission();
+  if(Notification.permission==='default')Notification.requestPermission().then(()=>swConfigure());
   initAudio();connectWS();
 }
 
-// ── WebSocket ─────────────────────────────────────────────────────────
+// ── Service Worker — background connection + notifications ────────────
+// The SW maintains a parallel WebSocket when the page is backgrounded,
+// buffers incoming messages in IndexedDB, and shows system notifications.
+// On wake, the page drains the SW inbox so nothing is missed.
+
+let _swRegistration = null;
+
+async function registerSW() {
+  if (!('serviceWorker' in navigator)) {
+    console.log('[App] ServiceWorker not supported in this browser');
+    return;
+  }
+  // SW requires HTTPS (or localhost). On plain HTTP it won't register
+  // but the app still works — just without background notifications.
+  if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    console.log('[App] SW skipped — requires HTTPS');
+    return;
+  }
+  try {
+    _swRegistration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    console.log('[App] SW registered, scope:', _swRegistration.scope);
+
+    // Listen for messages from the SW
+    navigator.serviceWorker.addEventListener('message', onSWMessage);
+
+    // Handle notification-click → open-chat
+    if (location.search) {
+      const params = new URLSearchParams(location.search);
+      const chatPid = params.get('chat');
+      if (chatPid && App.appVisible) {
+        // Wait for app to fully load then open the chat
+        setTimeout(() => { if (App.conversations.has(chatPid)) openChat(chatPid); }, 500);
+      }
+    }
+  } catch(e) {
+    console.warn('[App] SW registration failed:', e.message);
+  }
+}
+
+// Configure the SW with our identity + server URL after joining
+function swConfigure() {
+  if (!navigator.serviceWorker?.controller) return;
+  navigator.serviceWorker.controller.postMessage({
+    type      : 'sw-config',
+    serverUrl : App.serverUrl,
+    peerId    : App.me.id,
+    peerName  : App.me.name,
+    peerAvatar: App.me.avatar,
+  });
+}
+
+// Tell SW to stop its background WS (called on disconnect/reset)
+function swDisconnect() {
+  if (!navigator.serviceWorker?.controller) return;
+  navigator.serviceWorker.controller.postMessage({ type: 'sw-disconnect' });
+}
+
+// Drain the SW inbox when the tab becomes visible
+async function swDrain() {
+  if (!navigator.serviceWorker?.controller) return;
+  navigator.serviceWorker.controller.postMessage({ type: 'sw-drain' });
+}
+
+// Handle messages coming from the SW
+function onSWMessage(e) {
+  const data = e.data;
+  if (!data || !data.type) return;
+
+  if (data.type === 'sw-ready') {
+    console.log('[App] SW acknowledged config');
+  }
+
+  else if (data.type === 'sw-drain-done') {
+    if (data.count > 0) {
+      console.log(`[App] Drained ${data.count} buffered SW messages`);
+      // Re-render current chat if it has new messages
+      if (App.currentChat) renderAllMsgs(App.currentChat);
+      renderPeerList();
+    }
+  }
+
+  else if (data.type === 'sw-message') {
+    // SW received a message while we were backgrounded/asleep
+    // The SW already wrote it to IndexedDB conversations store.
+    // We just need to update in-memory state and UI.
+    if (data.gid) {
+      // Group message
+      const gid = data.gid;
+      const payload = data.payload;
+      if (!payload) return;
+      const g = App.groups.get(gid);
+      if (!g) return;
+      // Add to in-memory conversations if not already there (dedup by id)
+      if (!App.conversations.has(gid)) App.conversations.set(gid, []);
+      const existing = App.conversations.get(gid);
+      if (!existing.some(m => m.id === payload.id)) {
+        existing.push({ ...payload, time: new Date(payload.time || Date.now()), direction: 'in' });
+      }
+      if (App.currentChat === gid && document.visibilityState === 'visible') {
+        renderAllMsgs(gid); scrollBottom();
+      } else {
+        incUnread(gid); renderPeerList();
+      }
+    } else if (data.pid) {
+      // P2P direct message (via SW relay fallback)
+      const pid     = data.pid;
+      const payload = data.payload;
+      if (!payload) return;
+      if (!App.conversations.has(pid)) App.conversations.set(pid, []);
+      const existing = App.conversations.get(pid);
+      if (!existing.some(m => m.id === payload.id)) {
+        existing.push({ ...payload, time: new Date(payload.time || Date.now()), direction: 'in' });
+      }
+      if (App.currentChat === pid && document.visibilityState === 'visible') {
+        renderAllMsgs(pid); scrollBottom();
+      } else {
+        incUnread(pid); renderPeerList();
+      }
+    }
+  }
+
+  else if (data.type === 'sw-signal') {
+    // SW forwarded a WS signal (peer-joined, call-request, etc.)
+    // Feed it into our normal signal handler
+    if (data.signal) handleSignal(data.signal).catch(e => console.warn('[App] SW signal error:', e));
+  }
+
+  else if (data.type === 'sw-open-chat') {
+    // User tapped a notification → open the specific chat
+    const pid = data.pid;
+    if (!pid) return;
+    if (!App.appVisible) {
+      // App not yet fully loaded — wait for it
+      const wait = setInterval(() => {
+        if (App.appVisible) { clearInterval(wait); openChat(pid); }
+      }, 200);
+      setTimeout(() => clearInterval(wait), 5000); // give up after 5s
+    } else {
+      openChat(pid);
+      if (isMobile()) {
+        document.getElementById('sidebar').classList.add('hidden');
+        document.getElementById('sidebar-backdrop').classList.remove('show');
+      }
+    }
+  }
+}
+
+// ── Improved showPush: uses SW notification when page is backgrounded ──
+// The old implementation used new Notification() directly — that only
+// works when the page is visible. SW showNotification() works always.
+function showPush(title, body, pid) {
+  // If SW is active, it handles notifications — don't duplicate
+  if (navigator.serviceWorker?.controller) return;
+  // Fallback: direct Notification API (only works if page is visible/active)
+  if (Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+    try {
+      const n = new Notification(title, { body, icon: '/icon-192.png' });
+      if (pid) n.onclick = () => { window.focus(); openChat(pid); };
+    } catch {}
+  }
+}
+
+// ── Drain SW inbox + reconnect on tab visibility change ────────────────
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    // Tab became visible
+    if (App.appVisible) {
+      // Reconnect WS if it died while backgrounded
+      if (!App.ws || App.ws.readyState === WebSocket.CLOSED || App.ws.readyState === WebSocket.CLOSING) {
+        App.ws = null; connectWS();
+      }
+      // Drain any messages the SW buffered
+      swDrain();
+      // Tell SW we're in the foreground (it can step back its own WS)
+      navigator.serviceWorker?.controller?.postMessage({ type: 'sw-foreground' });
+    }
+  }
+});
 function connectWS(){
   if(App.ws&&(App.ws.readyState===WebSocket.CONNECTING||App.ws.readyState===WebSocket.OPEN))return;
   clearTimeout(App.reconnectTimer);
@@ -780,6 +975,10 @@ function connectWS(){
     wsSend({type:'register',id:App.me.id,name:App.me.name,avatar:App.me.avatar});
     setAppConn(true);hideBanner();startPing();
     if(!App.appVisible){showApp();App.appVisible=true;}
+    // Tell SW our current identity so it can maintain a parallel connection
+    swConfigure();
+    // Drain any messages SW buffered while we were disconnected
+    swDrain();
   };
   ws.onmessage=e=>{
     resetPong();
@@ -809,9 +1008,8 @@ function resetPong(){clearTimeout(App.pongTimer);}
 function wsSend(obj){if(App.ws?.readyState===WebSocket.OPEN)App.ws.send(JSON.stringify(obj));}
 function showBanner(){const b=document.getElementById('reconn-banner');if(b)b.style.display='block';}
 function hideBanner(){const b=document.getElementById('reconn-banner');if(b)b.style.display='none';}
-document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden&&App.appVisible&&(!App.ws||App.ws.readyState===WebSocket.CLOSED||App.ws.readyState===WebSocket.CLOSING)){App.ws=null;connectWS();}
-});
+
+
 
 // ── Signal handler ────────────────────────────────────────────────────
 async function handleSignal(msg){
@@ -1124,7 +1322,7 @@ function showIncomingCall(data){
   document.getElementById('incoming-name').textContent=data.callerName;
   document.getElementById('incoming-type').textContent=data.callType==='video'?'📹 Video Call':'📞 Voice Call';
   document.getElementById('incoming-call').style.display='flex';
-  startRingtone();showPush('Incoming Call',`${data.callType==='video'?'Video':'Voice'} call from ${data.callerName}`);
+  startRingtone();showPush('Incoming Call',`${data.callType==='video'?'Video':'Voice'} call from ${data.callerName}`,data.from);
   setTimeout(()=>{if(document.getElementById('incoming-call').style.display!=='none')declineCall();},30000);
 }
 async function acceptCall(){
@@ -1296,7 +1494,7 @@ function handleGroupMessage(msg){
     const message={id:payload.id,from:payload.from,type:'text',text:payload.text,time:new Date(payload.time),direction:'in',senderName:sender.name,senderAvatar:sender.avatar,replyTo:payload.replyTo||null};
     pushMsg(gid,message);
     if(App.currentChat===gid&&document.visibilityState==='visible'){renderMsg(message);scrollBottom();}
-    else{incUnread(gid);toast(`💬 [${g.name}] ${sender.name}: ${payload.text.substring(0,40)}`);playMsgSound();showPush(`[${g.name}] ${sender.name}`,payload.text);}
+    else{incUnread(gid);toast(`💬 [${g.name}] ${sender.name}: ${payload.text.substring(0,40)}`);playMsgSound();showPush(`[${g.name}] ${sender.name}`,payload.text,gid);}
   }else if(payload.type==='attachment'){
     const message={...payload,time:new Date(payload.time),direction:'in',senderName:sender.name,senderAvatar:sender.avatar};
     pushMsg(gid,message);
@@ -1404,7 +1602,7 @@ function rxText(pid,data){
   pushMsg(pid,msg);
   sendVia(pid,{type:'delivered',msgId:data.id});
   if(App.currentChat===pid&&document.visibilityState==='visible'){renderMsg(msg);scrollBottom();}
-  else{incUnread(pid);toast(`💬 ${peer.name||pid}: ${data.text.substring(0,50)}`);playMsgSound();showPush(`Message from ${peer.name||pid}`,data.text);}
+  else{incUnread(pid);toast(`💬 ${peer.name||pid}: ${data.text.substring(0,50)}`);playMsgSound();showPush(`Message from ${peer.name||pid}`,data.text,pid);}
 }
 function rxAttachment(pid,data){
   const peer=App.peers.get(pid)||App.historyPeers.get(pid);if(!peer)return;
@@ -1412,7 +1610,7 @@ function rxAttachment(pid,data){
   pushMsg(pid,msg);
   sendVia(pid,{type:'delivered',msgId:data.id});
   if(App.currentChat===pid&&document.visibilityState==='visible'){renderMsg(msg);scrollBottom();}
-  else{incUnread(pid);toast(`📁 ${peer.name||pid}: ${data.fileName}`);playMsgSound();showPush(`File from ${peer.name||pid}`,data.fileName);}
+  else{incUnread(pid);toast(`📁 ${peer.name||pid}: ${data.fileName}`);playMsgSound();showPush(`File from ${peer.name||pid}`,data.fileName,pid);}
 }
 function markDelivered(msgId){
   const el=document.getElementById('tick_'+msgId);
@@ -1767,6 +1965,7 @@ function fileIcon(mime,name){const ext=(name||'').split('.').pop().toLowerCase()
 
 // ── Boot ──────────────────────────────────────────────────────────────
 async function boot(){
+  await registerSW();               // Start SW early so it's ready by join time
   await initDB();
   await loadHistoryFromDB();
   loadLocalProfile();
@@ -1774,6 +1973,9 @@ async function boot(){
   loadGroupsFromStorage();
   await autoFillServerUrl();
   document.getElementById('username-input').focus();
+  // If we were already joined (profile has serverUrl), the SW may have
+  // buffered messages — drain them now
+  if(App.serverUrl && App.me.id) swDrain();
 }
 boot();
 document.getElementById('username-input').addEventListener('keydown',e=>{if(e.key==='Enter')joinNetwork();});
