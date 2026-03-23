@@ -79,7 +79,3 @@ Pull requests are highly encouraged, especially for features involving decentral
 ```
 
 ***
-
-By framing it this way, you immediately filter out casual users and directly attract the high-value engineers and military/industrial contractors who actually need this technology. 
-
-If this looks good to you, the next step is launching. Would you like me to draft the aggressive, highly-technical pitch for the **Hacker News (Y Combinator)** and **r/selfhosted** launch posts?
