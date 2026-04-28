@@ -1,25 +1,21 @@
 {
-  "name": "offline-lanlink",
-  "version": "1.0.0",
-  "description": "",
+  "name": "lanlink",
+  "version": "9.0.0",
   "main": "server.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+  "bin": "server.js",
+  "pkg": {
+    "assets": [
+      "app.html",
+      "sw.js"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-macos-x64",
+      "node18-linux-x64"
+    ]
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Nir1999/Offline-LanLink.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/Nir1999/Offline-LanLink/issues"
-  },
-  "homepage": "https://github.com/Nir1999/Offline-LanLink#readme",
   "dependencies": {
-    "ws": "^8.19.0"
+    "node-forge": "^1.4.0",
+    "ws": "^8.13.0"
   }
 }

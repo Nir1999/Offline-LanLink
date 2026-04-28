@@ -28,9 +28,36 @@ const net   = require('net');
 const { WebSocketServer, WebSocket } = require('ws');
 
 // ── Configuration ──────────────────────────────────────────────────
-const KEY_PATH  = path.join(__dirname, 'key.pem');
-const CERT_PATH = path.join(__dirname, 'cert.pem');
-const HAS_CERTS = fs.existsSync(KEY_PATH) && fs.existsSync(CERT_PATH);
+const isCompiled = typeof process.pkg !== 'undefined';
+const runDir = isCompiled ? path.dirname(process.execPath) : __dirname;
+
+const KEY_PATH  = path.join(runDir, 'key.pem');
+const CERT_PATH = path.join(runDir, 'cert.pem');
+let HAS_CERTS = fs.existsSync(KEY_PATH) && fs.existsSync(CERT_PATH);
+
+if (!HAS_CERTS) {
+  try {
+    console.log('  ⏳ Generating self-signed HTTPS certificates for WebRTC calls...');
+    const forge = require('node-forge');
+    const keys = forge.pki.rsa.generateKeyPair(2048);
+    const cert = forge.pki.createCertificate();
+    cert.publicKey = keys.publicKey;
+    cert.serialNumber = '01';
+    cert.validity.notBefore = new Date();
+    cert.validity.notAfter = new Date();
+    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10);
+    const attrs = [{ name: 'commonName', value: 'LanLink' }];
+    cert.setSubject(attrs);
+    cert.setIssuer(attrs);
+    cert.sign(keys.privateKey, forge.md.sha256.create());
+    fs.writeFileSync(KEY_PATH, forge.pki.privateKeyToPem(keys.privateKey));
+    fs.writeFileSync(CERT_PATH, forge.pki.certificateToPem(cert));
+    HAS_CERTS = true;
+    console.log('  ✅ Certificates saved successfully.\n');
+  } catch (e) {
+    // node-forge not installed, will fallback to HTTP
+  }
+}
 
 const PREFERRED_PORT = HAS_CERTS ? 8443 : 8080;
 const MAX_PORT_TRIES = 20;
@@ -38,7 +65,7 @@ const STUN_PORT = 3478;
 let ACTIVE_PORT = null;
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;  // 500 MB
-const UPLOADS_DIR      = path.join(__dirname, 'uploads');
+const UPLOADS_DIR      = path.join(runDir, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const STATIC_FILES = {
   '/': { path: path.join(__dirname, 'app.html'), contentType: 'text/html; charset=utf-8', headers: { 'Cache-Control': 'no-store' } },
@@ -104,7 +131,7 @@ function serveCachedStatic(pathname, res, missingMessage) {
 // ── Peer registry ──────────────────────────────────────────────────
 const peers = new Map();  // peerId → { ws, id, name, avatar, ip }
 
-const ANNOUNCEMENTS_FILE = path.join(__dirname, 'announcements.json');
+const ANNOUNCEMENTS_FILE = path.join(runDir, 'announcements.json');
 let announcements = [];
 try {
   if (fs.existsSync(ANNOUNCEMENTS_FILE)) {
@@ -136,7 +163,7 @@ function peerSnapshot(excludeId = null) {
   // BUG FIX: exclude the registering peer so they don't see themselves
   return [...peers.values()]
     .filter(p => p.id !== excludeId)
-    .map(({ id, name, avatar, ip }) => ({ id, name, avatar, ip }));
+    .map(({ id, name, avatar }) => ({ id, name, avatar }));
 }
 
 // ── CPU Usage tracking ─────────────────────────────────────────────
@@ -397,7 +424,7 @@ function handleHTTP(req, res) {
   // ── /uploads/:file — serve uploaded files ──────────────────────
   if (pathname.startsWith('/uploads/')) {
     const normalized = path.normalize(pathname).replace(/^(\.\.[\\/])+/, '');
-    const filePath   = path.join(__dirname, normalized);
+    const filePath   = path.join(runDir, normalized);
     if (!filePath.startsWith(UPLOADS_DIR + path.sep) && filePath !== UPLOADS_DIR) {
       res.writeHead(403); res.end('Forbidden'); return;
     }
@@ -497,7 +524,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'welcome', yourId: peerId, yourIp: ip }));
         // BUG FIX: exclude registering peer from their own peer-list
         ws.send(JSON.stringify({ type: 'peer-list', peers: peerSnapshot(peerId) }));
-        broadcast({ type: 'peer-joined', id: peerId, name: msg.name, avatar: msg.avatar, ip }, peerId);
+        broadcast({ type: 'peer-joined', id: peerId, name: msg.name, avatar: msg.avatar }, peerId);
         log(`[+] ${msg.name} (${peerId}) from ${ip}  [${peers.size} online]`);
         // Send existing announcements to the newly connected peer
         ws.send(JSON.stringify({ type: 'announcements', data: announcements }));
@@ -712,9 +739,8 @@ webServer.on('listening', () => {
   console.log(`  Linux:  sudo ufw allow ${ACTIVE_PORT}/tcp && sudo ufw allow ${STUN_PORT}/udp\n`);
 
   if (!HAS_CERTS) {
-    console.log('  ── ENABLE CALLS (one-time HTTPS setup) ────────────────────');
-    console.log('  openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=LanLink"');
-    console.log('  Then restart and open the HTTPS URL printed above.\n');
+    console.log('  ⚠️  Running in HTTP mode (Voice/Video calls disabled).');
+    console.log('      To enable calls, run: npm install node-forge\n');
   }
 
   console.log(`  📁  Uploads: ${UPLOADS_DIR}`);
@@ -723,13 +749,25 @@ webServer.on('listening', () => {
 
 wss.on('listening', () => log(`WS    listening on  ${HAS_CERTS ? 'wss' : 'ws'}://0.0.0.0:${ACTIVE_PORT}`));
 
-process.on('SIGINT', () => {
-  clearInterval(heartbeat);
-  try { stunSocket.close(); } catch {}
+const gracefulShutdown = () => {
   console.log('\n  👋 Shutting down…');
+  clearInterval(heartbeat);
   broadcast({ type: 'server-shutdown' });
+  
+  try { stunSocket.close(); } catch {}
+  try { wss.close(); } catch {}
+  
+  for (const socket of activeSockets) {
+    try { socket.destroy(); } catch {}
+  }
+  activeSockets.clear();
+  try { webServer.close(); } catch {}
+
   setTimeout(() => process.exit(0), 300);
-});
+};
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 
 process.on('uncaughtException', err => console.error('  [UNCAUGHT]', err.message, '\n', err.stack));
 

@@ -312,6 +312,14 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
 .group-manage-btn:hover{color:var(--text);border-color:var(--accent);}
 
 /* ── HEALTH MODAL ── */
+#verify-modal{position:fixed;inset:0;background:rgba(0,0,0,.82);display:none;align-items:flex-start;justify-content:center;z-index:1050;padding:20px;overflow-y:auto;}
+#verify-modal.open{display:flex;}
+.verify-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:24px;max-width:420px;width:100%;margin:auto;display:flex;flex-direction:column;gap:16px;}
+.verify-card h3{font-family:var(--font-head);font-size:17px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.verify-card p{font-size:12px;color:var(--text2);line-height:1.6;}
+.safety-number-box{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;font-family:var(--font-mono);font-size:18px;letter-spacing:2px;text-align:center;word-spacing:8px;color:var(--accent2);}
+
+/* ── HEALTH MODAL ── */
 #health-modal{position:fixed;inset:0;background:rgba(0,0,0,.82);display:none;align-items:flex-start;justify-content:center;z-index:1050;padding:20px;overflow-y:auto;}
 #health-modal.open{display:flex;}
 .health-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:24px;max-width:420px;width:100%;margin:auto;display:flex;flex-direction:column;gap:16px;}
@@ -486,6 +494,7 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
         <div class="chat-actions">
           <button class="icon-btn" id="btn-voice-call" title="Voice Call" onclick="initiateCall('audio')" style="font-size:16px;display:none;">📞</button>
           <button class="icon-btn" id="btn-video-call" title="Video Call" onclick="initiateCall('video')" style="font-size:16px;display:none;">📹</button>
+          <button class="icon-btn" id="btn-verify-peer" title="Verify Identity" onclick="showVerifyModal()" style="font-size:16px;display:none;">🛡️</button>
           <button class="icon-btn" id="btn-send-file" title="Send File" onclick="document.getElementById('file-input').click()" style="font-size:16px;">📎</button>
         <button class="icon-btn" id="btn-send-folder" title="Send Folder" onclick="document.getElementById('folder-input').click()" style="font-size:16px;">📁</button>
           <button class="icon-btn" id="btn-manage-group" title="Manage Group" onclick="openManageGroup()" style="font-size:16px;display:none;">⚙️</button>
@@ -651,6 +660,18 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
       <button class="btn-secondary" onclick="closeGroupModal()">Cancel</button>
       <button class="btn-primary" id="group-modal-save-btn" onclick="saveGroup()">Create Group</button>
     </div>
+  </div>
+</div>
+
+<!-- VERIFY MODAL -->
+<div id="verify-modal">
+  <div class="verify-card">
+    <h3><span style="color:var(--accent2)">🛡️</span> Verify Identity</h3>
+    <p>To ensure your connection is secure and not man-in-the-middled, compare this Safety Number with <strong id="verify-peer-name">your peer</strong>. If it matches, your end-to-end encryption is working correctly.</p>
+    <div class="safety-number-box" id="safety-number">
+      <div style="color:var(--text3);font-size:13px;padding:8px 0;">Generating...</div>
+    </div>
+    <button class="btn-secondary" onclick="closeVerifyModal()">Done</button>
   </div>
 </div>
 
@@ -2168,6 +2189,34 @@ async function handleGroupMessage(msg){
   }
 }
 
+// ── E2EE Verification ────────────────────────────────────────────────
+async function showVerifyModal() {
+  if (!App.currentChat || isGroup(App.currentChat)) return;
+  const peer = App.peers.get(App.currentChat) || App.historyPeers.get(App.currentChat);
+  if (!peer) return;
+
+  document.getElementById('verify-peer-name').textContent = peer.name;
+  document.getElementById('verify-modal').classList.add('open');
+  const box = document.getElementById('safety-number');
+  box.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px 0;">Generating...</div>';
+
+  if (!peer.pubKey || !E2E.pubKey64) {
+    box.innerHTML = '<div style="color:var(--accent3);font-size:13px;padding:8px 0;">Public key not available.</div>';
+    return;
+  }
+
+  const combined = E2E.pubKey64 < peer.pubKey ? E2E.pubKey64 + peer.pubKey : peer.pubKey + E2E.pubKey64;
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(combined));
+  const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const digits = hashHex.replace(/\D/g, '').substring(0, 30);
+  const groups = Array.from({ length: 6 }, (_, i) => digits.substring(i * 5, i * 5 + 5));
+  box.textContent = groups.join(' ');
+}
+function closeVerifyModal() {
+  document.getElementById('verify-modal').classList.remove('open');
+}
+document.getElementById('verify-modal').addEventListener('click',function(e){if(e.target===this)closeVerifyModal();});
+
 // ── Server Health ─────────────────────────────────────────────────────
 let _healthTimer = null;
 function openHealthModal() {
@@ -2697,6 +2746,7 @@ function updateChatHeader(pid){
   const vcBtn=document.getElementById('btn-voice-call');
   const vidBtn=document.getElementById('btn-video-call');
   const mgBtn=document.getElementById('btn-manage-group');
+  const verifyBtn=document.getElementById('btn-verify-peer');
   const sfBtn=document.getElementById('btn-send-folder');
   const sflBtn=document.getElementById('btn-send-file');
   if(pid === 'board') {
@@ -2707,6 +2757,7 @@ function updateChatHeader(pid){
     if(vcBtn)vcBtn.style.display='none';
     if(vidBtn)vidBtn.style.display='none';
     if(mgBtn)mgBtn.style.display='none';
+    if(verifyBtn)verifyBtn.style.display='none';
     if(sfBtn)sfBtn.style.display='';
     if(sflBtn)sflBtn.style.display='';
     return;
@@ -2724,6 +2775,7 @@ function updateChatHeader(pid){
     if(vcBtn)vcBtn.style.display='none';
     if(vidBtn)vidBtn.style.display='none';
     if(mgBtn)mgBtn.style.display=g.createdBy===App.me.id?'':'none';
+    if(verifyBtn)verifyBtn.style.display='none';
     if(sfBtn)sfBtn.style.display='';
   }else{
     const peer=App.peers.get(pid)||App.historyPeers.get(pid)||{name:pid,avatar:'👤',ip:''};
@@ -2734,6 +2786,7 @@ function updateChatHeader(pid){
     const dt=document.getElementById('chat-peer-dot');if(dt)dt.className='status-dot '+(isOnline?'online':'error');
     if(vcBtn)vcBtn.style.display=isOnline?'':'none';
     if(vidBtn)vidBtn.style.display=isOnline?'':'none';
+    if(verifyBtn)verifyBtn.style.display=isOnline?'':'none';
     if(mgBtn)mgBtn.style.display='none';
     if(sfBtn)sfBtn.style.display='none';
   }
