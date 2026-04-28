@@ -139,9 +139,43 @@ const MAX_PORT_TRIES = 20;
 const STUN_PORT = 3478;
 let ACTIVE_PORT = null;
 
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;  // 500 MB
+let serverConfig = { maxUploadMb: 500, retentionDays: 0, maxAnnouncements: 100, allowGroups: true };
+const CONFIG_FILE = path.join(runDir, 'server_config.json');
+try {
+  if (fs.existsSync(CONFIG_FILE)) Object.assign(serverConfig, JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')));
+} catch(e) {}
+function saveServerConfig() {
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(serverConfig, null, 2)); } catch(e) {}
+}
+
 const UPLOADS_DIR      = path.join(runDir, 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// Auto-delete old uploads (runs every hour)
+setInterval(() => {
+  if (serverConfig.retentionDays <= 0) return;
+  const cutoff = Date.now() - (serverConfig.retentionDays * 24 * 60 * 60 * 1000);
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    for (const f of files) {
+      const p = path.join(UPLOADS_DIR, f);
+      const stat = fs.statSync(p);
+      if (stat.isFile() && stat.mtimeMs < cutoff) fs.unlinkSync(p);
+    }
+  } catch(e) {}
+}, 3600000).unref();
+
+function getUploadsSize() {
+  let size = 0;
+  try {
+    const files = fs.readdirSync(UPLOADS_DIR);
+    for (const f of files) {
+      size += fs.statSync(path.join(UPLOADS_DIR, f)).size;
+    }
+  } catch(e) {}
+  return size;
+}
+
 const STATIC_FILES = {
   '/': { path: path.join(__dirname, 'app.html'), contentType: 'text/html; charset=utf-8', headers: { 'Cache-Control': 'no-store' } },
   '/index.html': { path: path.join(__dirname, 'app.html'), contentType: 'text/html; charset=utf-8', headers: { 'Cache-Control': 'no-store' } },
@@ -377,12 +411,6 @@ async function handleHTTP(req, res) {
 
     const netUsage = getNetworkUsage();
     
-    const activePeersDetails = await Promise.all([...peers.values()].map(async p => {
-      const mac = await getMac(p.ip);
-      const deviceName = allowedMacs.get(mac) || (p.isHost ? 'Host PC' : 'Unknown Device');
-      return { name: p.name, ip: p.ip, deviceName };
-    }));
-
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({
       uptime: process.uptime(),
@@ -395,7 +423,6 @@ async function handleHTTP(req, res) {
       networkRx: netUsage.rx,
       networkTx: netUsage.tx,
       peersOnline: peers.size,
-      activePeersDetails: activePeersDetails,
       nodeVersion: process.version,
       platform: os.platform()
     }));
@@ -434,7 +461,7 @@ async function handleHTTP(req, res) {
       
       // Prevent total aggregated file size from bypassing MAX_UPLOAD_BYTES
       const currentSize = fs.existsSync(destPath) ? fs.statSync(destPath).size : 0;
-      if (currentSize + chunk.length > MAX_UPLOAD_BYTES) {
+      if (currentSize + chunk.length > serverConfig.maxUploadMb * 1024 * 1024) {
         aborted = true; stream.destroy(); try { fs.unlinkSync(destPath); } catch {}
         if (!res.headersSent) { res.writeHead(413); res.end(JSON.stringify({ error: 'Total file size exceeded' })); }
       }
@@ -485,13 +512,13 @@ async function handleHTTP(req, res) {
     req.on('data', chunk => {
       if (aborted) return;
       received += chunk.length;
-      if (received > MAX_UPLOAD_BYTES) {
+      if (received > serverConfig.maxUploadMb * 1024 * 1024) {
         aborted = true;
         stream.destroy();
         try { fs.unlinkSync(destPath); } catch {}
         if (!res.headersSent) {
           res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `File too large (max ${MAX_UPLOAD_BYTES/1024/1024|0} MB)` }));
+          res.end(JSON.stringify({ error: `File too large (max ${serverConfig.maxUploadMb} MB)` }));
         }
       }
     });
@@ -645,7 +672,7 @@ wss.on('connection', (ws, req) => {
         }
         peerId = msg.id;
         peers.set(peerId, { ws, id: peerId, name: msg.name || 'Anonymous', avatar: msg.avatar || '👤', ip, isHost });
-        ws.send(JSON.stringify({ type: 'welcome', yourId: peerId, yourIp: ip, isHost }));
+        ws.send(JSON.stringify({ type: 'welcome', yourId: peerId, yourIp: ip, isHost, config: { allowGroups: serverConfig.allowGroups } }));
         ws.send(JSON.stringify({ type: 'peer-list', peers: peerSnapshot(peerId) }));
         broadcast({ type: 'peer-joined', id: peerId, name: msg.name, avatar: msg.avatar }, peerId);
         log(`[+] ${msg.name} (${peerId}) from ${ip}  [${peers.size} online]`);
@@ -668,6 +695,7 @@ wss.on('connection', (ws, req) => {
         break;
 
       case 'group-message':
+        if (!serverConfig.allowGroups) break;
         if (Array.isArray(msg.members) && msg.members.length < 50) // STRICTION: Cap group fanout
           msg.members.filter(id => id !== peerId && peers.has(id)).forEach(id => sendTo(id, msg));
         break;
@@ -701,7 +729,7 @@ wss.on('connection', (ws, req) => {
           senderName: peers.get(peerId)?.name || 'Anonymous',
           time: Date.now()
         };
-        if (announcements.length >= 100) announcements.shift(); // Retain last 100 only
+        if (announcements.length >= (serverConfig.maxAnnouncements || 100)) announcements.shift();
         announcements.push(entry);
         saveAnnouncements();
         broadcast({ type: 'new-announcement', data: entry });
