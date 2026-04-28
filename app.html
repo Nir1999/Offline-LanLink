@@ -332,6 +332,18 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
 .health-val.warn{color:#ffd700;}
 .health-val.bad{color:var(--accent3);}
 
+/* ── SECURITY MODAL ── */
+#security-modal{position:fixed;inset:0;background:rgba(0,0,0,.82);display:none;align-items:flex-start;justify-content:center;z-index:1050;padding:20px;overflow-y:auto;}
+#security-modal.open{display:flex;}
+.security-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:24px;max-width:420px;width:100%;margin:auto;display:flex;flex-direction:column;gap:16px;}
+.security-card h3{font-family:var(--font-head);font-size:17px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.switch { position: relative; display: inline-block; width: 40px; height: 20px; flex-shrink:0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--surface3); transition: .4s; border-radius: 20px; border: 1px solid var(--border); }
+.switch .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; bottom: 2px; background-color: var(--text2); transition: .4s; border-radius: 50%; }
+.switch input:checked + .slider { background-color: var(--online); border-color: var(--online); }
+.switch input:checked + .slider:before { transform: translateX(20px); background-color: #fff; }
+
 /* ── EMOJI PICKER ── */
 #emoji-panel{display:none;position:absolute;bottom:72px;left:14px;z-index:400;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:10px;width:min(300px,calc(100vw - 28px));box-shadow:0 8px 32px rgba(0,0,0,.6);}
 #emoji-panel.open{display:block;}
@@ -429,6 +441,10 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
       3. Server address auto-fills — enter your name and Join.
     </div>
     <button class="btn-primary" onclick="joinNetwork()">Join Network →</button>
+    <div style="display:flex; gap:10px;">
+      <button class="btn-secondary" onclick="exportData()" title="Backup your chats & profile">💾 Backup</button>
+      <button class="btn-secondary" onclick="document.getElementById('import-input').click()" title="Restore from a backup file">📂 Restore</button>
+    </div>
     <button class="btn-secondary" onclick="runDiag()">🔍 Test Connectivity</button>
     <button class="btn-secondary" onclick="clearAllData()">🚪 Clear Data &amp; Reset</button>
     <div id="diag-output" style="display:none;background:var(--surface3);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:11px;font-family:var(--font-mono);color:var(--text2);line-height:1.9;white-space:pre-wrap;max-height:260px;overflow-y:auto;"></div>
@@ -449,8 +465,10 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
         </div>
       </div>
       <div class="sidebar-btns">
+        <button class="icon-btn" id="security-btn" title="Server Security" onclick="openSecurityModal()" style="display:none;">🛡️</button>
         <button class="icon-btn" title="Server Health" onclick="openHealthModal()">📊</button>
         <button class="icon-btn" title="New Group" onclick="openCreateGroup()">👥</button>
+        <button class="icon-btn" title="Delete Account & Exit" onclick="clearAllData()" style="color: var(--accent3);">🚪</button>
       </div>
     </div>
     <div class="conn-bar">
@@ -682,7 +700,35 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
     <div class="health-grid" id="health-grid">
       <div style="color:var(--text3);font-size:13px;padding:8px 0;grid-column:1/-1;">Loading metrics...</div>
     </div>
+    <div id="health-peers-list" style="display:flex; flex-direction:column; gap:6px;"></div>
     <button class="btn-secondary" onclick="closeHealthModal()">Close</button>
+  </div>
+</div>
+
+<!-- SECURITY MODAL -->
+<div id="security-modal">
+  <div class="security-card">
+    <h3><span style="color:var(--accent2)">🛡️</span> Server Security</h3>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <label class="switch">
+        <input type="checkbox" id="sec-toggle" onchange="toggleProtectedMode(this.checked)">
+        <span class="slider"></span>
+      </label>
+      <span style="font-size:14px; font-weight:500;">MAC Filtering (Protected Mode)</span>
+    </div>
+    <div id="mac-list-container" style="display:none; flex-direction:column; gap:10px;">
+      <p style="font-size:12px; color:var(--text3); line-height:1.6; margin-top:-8px;">Only devices with these MAC addresses will be allowed to connect to the server.</p>
+      <div style="display:flex; gap:8px; align-items:flex-end;">
+        <div class="input-group" style="flex:1.2;">
+          <label>MAC Address</label>
+          <input class="input-field" id="new-mac-input" placeholder="00:1A:2B:..." oninput="formatMacInput(event)">
+        </div>
+        <div class="input-group" style="flex:1;"><label>Device Name</label><input class="input-field" id="new-mac-name-input" placeholder="Nirma's Laptop"></div>
+        <button class="btn-primary" style="width:auto; padding:12px 16px; height:44px;" onclick="addMacAddress()">Add</button>
+      </div>
+      <div id="mac-list" style="max-height:200px; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
+    </div>
+    <button class="btn-secondary" onclick="closeSecurityModal()">Close</button>
   </div>
 </div>
 
@@ -690,6 +736,7 @@ body{min-height:100%;font-family:var(--font-body);background:var(--bg);color:var
 <input type="file" id="file-input" onchange="sendFile(this)">
 <input type="file" id="img-input" accept="image/*" onchange="sendImage(this)">
 <input type="file" id="folder-input" webkitdirectory directory multiple onchange="sendFolder(this)">
+<input type="file" id="import-input" style="display:none" accept=".json" onchange="importData(this.files[0])">
 
 <script>
 'use strict';
@@ -949,7 +996,7 @@ function loadLocalProfile(){
     const raw=localStorage.getItem(PROFILE_KEY);
     if(raw){
       const p=JSON.parse(raw);
-      App.me.id     = p.id     || ('u_'+Math.random().toString(36).substr(2,9));
+      App.me.id     = p.id     || ('u_' + (window.crypto?.randomUUID ? crypto.randomUUID().replace(/-/g,'').substring(0,9) : Math.random().toString(36).substr(2,9)));
       App.me.name   = p.name   || '';
       App.me.avatar = p.avatar || '🦊';
       if(p._serverUrl)  App.serverUrl  = p._serverUrl;
@@ -958,8 +1005,8 @@ function loadLocalProfile(){
       const ni=document.getElementById('username-input'); if(ni)ni.value=App.me.name;
       const opt=document.querySelector(`.avatar-opt[data-emoji="${App.me.avatar}"]`);
       if(opt){document.querySelectorAll('.avatar-opt').forEach(e=>e.classList.remove('selected'));opt.classList.add('selected');}
-    } else { App.me.id='u_'+Math.random().toString(36).substr(2,9); }
-  } catch { App.me.id='u_'+Math.random().toString(36).substr(2,9); }
+    } else { App.me.id='u_' + (window.crypto?.randomUUID ? crypto.randomUUID().replace(/-/g,'').substring(0,9) : Math.random().toString(36).substr(2,9)); }
+  } catch { App.me.id='u_' + (window.crypto?.randomUUID ? crypto.randomUUID().replace(/-/g,'').substring(0,9) : Math.random().toString(36).substr(2,9)); }
 }
 function saveProfile(){
   try{localStorage.setItem(PROFILE_KEY,JSON.stringify({...App.me,_serverUrl:App.serverUrl||'',_serverBase:App.serverBase||''}));}catch{}
@@ -982,6 +1029,41 @@ function loadGroupsFromStorage(){
 }
 function saveGroupsToStorage(){
   try{const o={};App.groups.forEach((g,k)=>{o[k]=g;});localStorage.setItem(GROUPS_KEY,JSON.stringify(o));}catch{}
+}
+async function exportData(){
+  const data={
+    profile:localStorage.getItem(PROFILE_KEY),
+    peers:localStorage.getItem(PEERS_CACHE_KEY),
+    groups:localStorage.getItem(GROUPS_KEY),
+    conversations:[]
+  };
+  if(db){
+    const tx=db.transaction('conversations','readonly');
+    const store=tx.objectStore('conversations');
+    const req=store.getAll(), keysReq=store.getAllKeys();
+    await new Promise(res=>{
+      req.onsuccess=()=>{ keysReq.onsuccess=()=>{ data.conversations=keysReq.result.map((k,i)=>({key:k,value:req.result[i]})); res(); }; };
+      req.onerror=res;
+    });
+  }
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`LanLink_Backup_${Date.now()}.json`;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+}
+function importData(file){
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      if(data.profile)localStorage.setItem(PROFILE_KEY,data.profile);
+      if(data.peers)localStorage.setItem(PEERS_CACHE_KEY,data.peers);
+      if(data.groups)localStorage.setItem(GROUPS_KEY,data.groups);
+      if(data.conversations&&db){ const tx=db.transaction('conversations','readwrite'); const store=tx.objectStore('conversations'); store.clear(); data.conversations.forEach(c=>store.put(c.value,c.key)); await new Promise(res=>tx.oncomplete=res); }
+      alert('✅ Backup restored! The app will now reload.'); location.reload();
+    }catch(err){alert('❌ Invalid backup file');}
+  };
+  reader.readAsText(file);
 }
 function clearAllData(){
   if(!confirm('⚠️ Delete all history and profile? Cannot be undone.'))return;
@@ -1115,7 +1197,7 @@ async function joinNetwork(){
   if(!name){toast('⚠️ Enter your name');return;}
   if(!url){toast('⚠️ Enter server address');return;}
   App.me.name=name;App.me.avatar=App.selectedAvatar;
-  if(!App.me.id)App.me.id='u_'+Math.random().toString(36).substr(2,9);
+  if(!App.me.id)App.me.id='u_' + (window.crypto?.randomUUID ? crypto.randomUUID().replace(/-/g,'').substring(0,9) : Math.random().toString(36).substr(2,9));
   App.serverUrl=url;
   if(!App.serverBase){
     try{
@@ -1400,7 +1482,12 @@ function hideBanner(){const b=document.getElementById('reconn-banner');if(b)b.st
 // ── Signal handler ────────────────────────────────────────────────────
 async function handleSignal(msg){
   switch(msg.type){
-    case 'welcome': if(msg.yourIp)document.getElementById('my-ip-display').textContent=msg.yourIp; break;
+    case 'welcome':
+      if(msg.yourIp)document.getElementById('my-ip-display').textContent=msg.yourIp;
+      App.me.isHost = !!msg.isHost;
+      const secBtn = document.getElementById('security-btn');
+      if (secBtn) secBtn.style.display = App.me.isHost ? '' : 'none';
+      break;
     case 'peer-list': msg.peers.forEach(p=>{if(p.id!==App.me.id)addPeer(p);}); renderPeerList();updatePeerCount(); break;
     case 'peer-joined':
       if(msg.id!==App.me.id){
@@ -1469,6 +1556,32 @@ async function handleSignal(msg){
       break;
     }
     case 'server-shutdown': toast('⚠️ Server shutting down'); break;
+    case 'security-state': {
+      const tg = document.getElementById('sec-toggle');
+      if(tg) tg.checked = msg.enabled;
+      const ctr = document.getElementById('mac-list-container');
+      if(ctr) ctr.style.display = msg.enabled ? 'flex' : 'none';
+      const ml = document.getElementById('mac-list');
+      if(ml && msg.devices) {
+        ml.innerHTML = '';
+        msg.devices.forEach(d => {
+          const row = mkEl('div');
+          row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; background:var(--surface2); padding:10px 12px; border-radius:8px; border:1px solid var(--border);';
+          row.innerHTML = `<div style="display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;"><span style="font-weight:500; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(d.name)}</span><span style="font-family:var(--font-mono); font-size:11px; color:var(--text3);">${d.mac}</span></div>`;
+          if(d.mac !== 'localhost') {
+            const del = mkEl('button', 'btn-clear-chat');
+            del.textContent = '✕';
+            del.onclick = () => removeMacAddress(d.mac);
+            row.appendChild(del);
+          } else {
+            const b = mkEl('span'); b.textContent = 'HOST'; b.style.cssText='font-size:10px; font-family:var(--font-mono); color:var(--accent2); background:rgba(0,212,170,.1); padding: 2px 6px; border-radius:6px;';
+            row.appendChild(b);
+          }
+          ml.appendChild(row);
+        });
+      }
+      break;
+    }
   }
 }
 
@@ -2266,10 +2379,55 @@ async function fetchHealth() {
       <div class="health-item" ${sysSpan}><span class="health-label">SYSTEM</span><span class="health-val" style="text-transform:capitalize;">${data.platform} / Node ${data.nodeVersion}</span></div>
     `;
     document.getElementById('health-dot').className = 'status-dot online';
+
+    const peersList = document.getElementById('health-peers-list');
+    if (peersList && data.activePeersDetails && data.activePeersDetails.length > 0) {
+      let listHtml = '<div style="font-size:11px; color:var(--text3); font-family:var(--font-mono); margin-top:8px; margin-bottom:2px;">CONNECTED DEVICES</div>';
+      data.activePeersDetails.forEach(p => {
+        listHtml += `<div style="background:var(--surface2); padding:10px 12px; border-radius:8px; border:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <span style="font-size:13px; font-weight:600;">${esc(p.name)}</span>
+            <span style="font-size:11px; color:var(--text3); font-family:var(--font-mono);">${esc(p.deviceName)}</span>
+          </div>
+          <span style="font-size:11px; color:var(--accent2); font-family:var(--font-mono);">${p.ip}</span>
+        </div>`;
+      });
+      peersList.innerHTML = listHtml;
+    } else if (peersList) { peersList.innerHTML = ''; }
   } catch(e) {
     document.getElementById('health-dot').className = 'status-dot error';
     document.getElementById('health-grid').innerHTML = `<div style="color:var(--accent3);font-size:13px;padding:8px 0;grid-column:1/-1;">Error: ${e.message}</div>`;
   }
+}
+
+// ── Security Modal ────────────────────────────────────────────────────
+function openSecurityModal() {
+  if (!App.me.isHost) return;
+  document.getElementById('security-modal').classList.add('open');
+  wsSend({ type: 'get-security' });
+}
+function closeSecurityModal() { document.getElementById('security-modal').classList.remove('open'); }
+document.getElementById('security-modal').addEventListener('click', e => { if(e.target===e.currentTarget) closeSecurityModal(); });
+function toggleProtectedMode(enabled) { wsSend({ type: 'toggle-security', enabled }); }
+function formatMacInput(e) {
+  let val = e.target.value.replace(/[^a-fA-F0-9]/g, '');
+  if (val.length > 12) val = val.substring(0, 12);
+  const parts = val.match(/.{1,2}/g);
+  e.target.value = parts ? parts.join(':').toUpperCase() : val.toUpperCase();
+}
+function addMacAddress() {
+  const macInp = document.getElementById('new-mac-input');
+  const nameInp = document.getElementById('new-mac-name-input');
+  const mac = macInp.value.trim();
+  if (!mac) return;
+  if (mac.replace(/[^a-fA-F0-9]/g, '').length !== 12) return toast('⚠️ Invalid MAC address length');
+  wsSend({ type: 'add-mac', mac, name: nameInp.value.trim() });
+  macInp.value = '';
+  nameInp.value = '';
+}
+function removeMacAddress(mac) {
+  if (mac === 'localhost') return toast('Cannot remove host MAC');
+  wsSend({ type: 'remove-mac', mac });
 }
 
 // ── Emoji picker ──────────────────────────────────────────────────────
@@ -2469,7 +2627,7 @@ async function sendMessage(){
     // Group: relay via server, no WebRTC
     const g=App.groups.get(App.currentChat);if(!g){toast('⚠️ Group not found');return;}
     inp.value='';inp.style.height='auto';
-    const id='m_'+Date.now();
+    const id='m_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4));
     const payload={id,type:'text',text,time:new Date().toISOString(),from:App.me.id};
     if(App.replyTo)payload.replyTo={id:App.replyTo.id,text:App.replyTo.text||null,from:App.replyTo.from};
     const securePayload = await encryptGroupMsg(App.currentChat, payload);
@@ -2482,7 +2640,7 @@ async function sendMessage(){
   // P2P: WebRTC data channel
   if(!App.peers.has(App.currentChat)){toast('⚠️ Peer is offline');return;}
   inp.value='';inp.style.height='auto';
-  const id='m_'+Date.now();
+  const id='m_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4));
   const data={id,type:'text',text,time:new Date().toISOString(),from:App.me.id};
   if(App.replyTo)data.replyTo={id:App.replyTo.id,text:App.replyTo.text||null,fileName:App.replyTo.fileName||null,from:App.replyTo.from};
   const local={...data,time:new Date(),direction:'out',replyTo:data.replyTo||null};
@@ -2552,7 +2710,7 @@ async function sendFile(inp){
       toast('✅ File posted to board!');
       return;
     }
-    const payload={id:'f_'+Date.now(),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
+    const payload={id:'f_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4)),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
     if(grp){
       const g=App.groups.get(App.currentChat);
       if(g) { const securePayload = await encryptGroupMsg(App.currentChat, payload); wsSend({type:'group-message',members:(g.members||[]).filter(id=>id!==App.me.id),gid:App.currentChat,payload:securePayload}); }
@@ -2581,7 +2739,7 @@ async function sendImage(inp){
       toast('✅ Image posted to board!');
       return;
     }
-    const payload={id:'i_'+Date.now(),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
+    const payload={id:'i_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4)),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
     if(grp){
       const g=App.groups.get(App.currentChat);
       if(g) { const securePayload = await encryptGroupMsg(App.currentChat, payload); wsSend({type:'group-message',members:(g.members||[]).filter(id=>id!==App.me.id),gid:App.currentChat,payload:securePayload}); }
@@ -2640,7 +2798,7 @@ async function sendVoiceMemo(file,pid){
       toast('✅ Voice memo posted to board!');
       return;
     }
-    const payload={id:'a_'+Date.now(),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
+    const payload={id:'a_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4)),type:'attachment',url:result.url,fileName:file.name,fileSize:file.size,mimeType:result.mimeType||file.type,time:new Date().toISOString(),from:App.me.id};
     const local={...payload,time:new Date(),direction:'out',senderName:App.me.name,senderAvatar:App.me.avatar};
     if(isGroup(pid)){
       const g=App.groups.get(pid);
@@ -2682,7 +2840,7 @@ async function sendFolder(inp){
       toast('✅ Folder posted to board!');
       return;
     }
-    const payload={id:'d_'+Date.now(),type:'folder',folderName,files:uploadedFiles,time:new Date().toISOString(),from:App.me.id};
+    const payload={id:'d_'+Date.now()+'_'+(window.crypto?.randomUUID ? crypto.randomUUID().split('-')[0] : Math.random().toString(36).substr(2,4)),type:'folder',folderName,files:uploadedFiles,time:new Date().toISOString(),from:App.me.id};
     if(grp){
       const g=App.groups.get(App.currentChat);
       if(g) { const securePayload = await encryptGroupMsg(App.currentChat, payload); wsSend({type:'group-message',members:(g.members||[]).filter(id=>id!==App.me.id),gid:App.currentChat,payload:securePayload}); }

@@ -26,6 +26,7 @@ const os    = require('os');
 const dgram = require('dgram');
 const net   = require('net');
 const { WebSocketServer, WebSocket } = require('ws');
+const { execFile } = require('child_process');
 
 // ── Configuration ──────────────────────────────────────────────────
 const isCompiled = typeof process.pkg !== 'undefined';
@@ -57,6 +58,80 @@ if (!HAS_CERTS) {
   } catch (e) {
     // node-forge not installed, will fallback to HTTP
   }
+}
+
+// ── Protected Mode (MAC Filtering) ─────────────────────────────────
+let protectedMode = false;
+const allowedMacs = new Map([['localhost', 'Host PC']]); // Use Map<mac, name>
+const macCache = new Map();
+const MAC_LIST_FILE = path.join(runDir, 'allowed_macs.json');
+
+try {
+  if (fs.existsSync(MAC_LIST_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(MAC_LIST_FILE, 'utf8'));
+    if (Array.isArray(saved)) { // Migrate from old array format
+      saved.forEach(m => {
+        const clean = normalizeMac(m);
+        if (clean) allowedMacs.set(clean, 'Unnamed Device');
+      });
+      protectedMode = allowedMacs.size > 1; // If there were any MACs, mode was on
+      saveMacConfig(); // Immediately save in the new, better format
+    } else { // New object format
+      protectedMode = !!saved.enabled;
+      if (Array.isArray(saved.devices)) {
+        saved.devices.forEach(d => {
+          const clean = normalizeMac(d.mac);
+          if (clean) allowedMacs.set(clean, d.name || 'Unnamed Device');
+        });
+      }
+    }
+  }
+} catch(e) {}
+
+function saveMacConfig() {
+  const devices = Array.from(allowedMacs)
+    .filter(([mac, name]) => mac !== 'localhost')
+    .map(([mac, name]) => ({ mac, name }));
+  const toSave = { enabled: protectedMode, devices };
+  try { fs.writeFileSync(MAC_LIST_FILE, JSON.stringify(toSave, null, 2)); } catch(e) {}
+}
+
+function normalizeMac(mac) {
+  if (!mac) return null;
+  let cleaned = mac.toLowerCase().replace(/-/g, ':');
+  if (cleaned.includes(':')) {
+    const parts = cleaned.split(':');
+    if (parts.length !== 6) return null;
+    return parts.map(p => p.padStart(2, '0')).join(':');
+  }
+  cleaned = cleaned.replace(/[^a-f0-9]/g, '');
+  if (cleaned.length !== 12) return null;
+  return cleaned.match(/.{1,2}/g).join(':');
+}
+
+function isLocalIP(ip) {
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  const ifaces = os.networkInterfaces();
+  for (const addrs of Object.values(ifaces)) {
+    if (addrs.some(a => a.address === ip)) return true;
+  }
+  return false;
+}
+
+async function getMac(ip) {
+  if (isLocalIP(ip)) return 'localhost';
+  if (macCache.has(ip)) return macCache.get(ip); // Return cached MAC
+  return new Promise(resolve => {
+    execFile('arp', ['-a', ip], (err, stdout) => {
+      let result = null;
+      if (!err && stdout) {
+        const match = stdout.match(/([0-9a-fA-F]{1,2}[:-]){5}[0-9a-fA-F]{1,2}/);
+        if (match) result = normalizeMac(match[0]);
+      }
+      macCache.set(ip, result);
+      resolve(result);
+    });
+  });
 }
 
 const PREFERRED_PORT = HAS_CERTS ? 8443 : 8080;
@@ -100,7 +175,10 @@ function getMime(filename) {
 
 function getSafeFilename(rawName) {
   if (!rawName) return 'file.bin';
-  let safe = rawName.replace(/[^a-zA-Z0-9._\-]/g, '_').substring(0, 200);
+  // STRICTION: Only allow alphanumeric, dash, and dot. Prevent directory traversal strictly.
+  let safe = rawName.replace(/[^a-zA-Z0-9.\-]/g, '_').substring(0, 200);
+  // STRICTION: Prevent leading dots or dashes
+  safe = safe.replace(/^[.-]+/, 'file_');
   const ext = path.extname(safe).toLowerCase();
   if (['.exe', '.bat', '.cmd', '.sh', '.vbs', '.js', '.msi', '.jar', '.scr', '.html', '.htm'].includes(ext)) {
     safe += '.txt'; // Neutralize dangerous extensions
@@ -201,13 +279,26 @@ function getNetworkUsage() {
 }
 
 // ── HTTP handler ───────────────────────────────────────────────────
-function handleHTTP(req, res) {
+async function handleHTTP(req, res) {
   // ── Security Headers ──
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; connect-src 'self' ws: wss: http: https:; img-src 'self' data: blob:; manifest-src 'self' data:;");
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  // ── Intercept unauthorized MACs ──
+  if (protectedMode) {
+    const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    const mac = await getMac(ip);
+    if (!mac || !allowedMacs.has(mac)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('403 Forbidden: Device MAC address is not whitelisted.');
+      return;
+    }
+  }
 
   let pathname, searchParams;
   try {
@@ -285,6 +376,12 @@ function handleHTTP(req, res) {
     } catch (e) {}
 
     const netUsage = getNetworkUsage();
+    
+    const activePeersDetails = await Promise.all([...peers.values()].map(async p => {
+      const mac = await getMac(p.ip);
+      const deviceName = allowedMacs.get(mac) || (p.isHost ? 'Host PC' : 'Unknown Device');
+      return { name: p.name, ip: p.ip, deviceName };
+    }));
 
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({
@@ -298,6 +395,7 @@ function handleHTTP(req, res) {
       networkRx: netUsage.rx,
       networkTx: netUsage.tx,
       peersOnline: peers.size,
+      activePeersDetails: activePeersDetails,
       nodeVersion: process.version,
       platform: os.platform()
     }));
@@ -312,6 +410,12 @@ function handleHTTP(req, res) {
     const rawName     = req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : 'file.bin';
     const safeFileId  = getSafeFilename(fileId);
     const destPath    = path.join(UPLOADS_DIR, safeFileId);
+
+    // STRICTION: Global concurrency/rate limiting for uploads should be implemented here
+    // For now, enforce strict chunk index boundaries
+    if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks <= 0 || chunkIndex >= totalChunks) {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'Invalid chunk parameters' })); return;
+    }
 
     // Open file in append mode. (chunk 0 truncates and starts fresh).
     const stream = fs.createWriteStream(destPath, { flags: chunkIndex === 0 ? 'w' : 'a' });
@@ -423,11 +527,11 @@ function handleHTTP(req, res) {
 
   // ── /uploads/:file — serve uploaded files ──────────────────────
   if (pathname.startsWith('/uploads/')) {
-    const normalized = path.normalize(pathname).replace(/^(\.\.[\\/])+/, '');
-    const filePath   = path.join(runDir, normalized);
-    if (!filePath.startsWith(UPLOADS_DIR + path.sep) && filePath !== UPLOADS_DIR) {
-      res.writeHead(403); res.end('Forbidden'); return;
+    const fileName = decodeURIComponent(pathname.substring(9));
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      res.writeHead(400); res.end('Bad Request'); return;
     }
+    const filePath = path.join(UPLOADS_DIR, fileName);
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       res.writeHead(404); res.end('Not found'); return;
     }
@@ -470,16 +574,32 @@ const wss = new WebSocketServer({
   server: webServer, 
   perMessageDeflate: false,
   maxPayload: 2 * 1024 * 1024, // Fix: 2MB hard limit on WS frames
-  verifyClient: (info, cb) => {
+  verifyClient: async (info, cb) => {
     if (!info.origin) return cb(true); // Allow non-browser clients
     const host = info.req.headers.host;
-    // Strict origin check: block Cross-Site WebSocket Hijacking
-    if (info.origin.includes(host)) return cb(true);
-    cb(false, 403, 'Forbidden Origin');
+    // Strict origin check
+    if (!info.origin.includes(host)) return cb(false, 403, 'Forbidden Origin');
+    
+    if (protectedMode) {
+      const ip = (info.req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      const mac = await getMac(ip);
+      if (!mac || !allowedMacs.has(mac)) {
+        return cb(false, 403, 'Forbidden MAC');
+      }
+    }
+    cb(true);
   }
 });
 
 const ipRateLimits = new Map();
+
+// Prevent memory leak from IP tracking
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, limit] of ipRateLimits.entries()) {
+    if (now - limit.time > 5000) ipRateLimits.delete(ip);
+  }
+}, 60000).unref();
 
 wss.on('connection', (ws, req) => {
   const ip = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
@@ -496,7 +616,7 @@ wss.on('connection', (ws, req) => {
     if (now - limit.time > 1000) { limit.count = 0; limit.time = now; }
     limit.count++;
     ipRateLimits.set(ip, limit);
-    if (limit.count > 100) { // Limit to 100 messages per second per IP
+    if (limit.count > 30) { // STRICTION: Tighter limit to prevent WS flooding
       ws.terminate();
       return;
     }
@@ -505,24 +625,27 @@ wss.on('connection', (ws, req) => {
     if (rawBuf.length === 8 && rawBuf.toString('utf8', 0, 8) === '__ping__') { try { ws.send('__pong__'); } catch {} return; }
 
     const raw = rawBuf.toString();
+    // STRICTION: Hard limit on JSON string length before parsing to prevent V8 blocking
+    if (raw.length > 262144) { ws.terminate(); return; } 
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+    // STRICTION: Ensure msg is a valid object
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
     if (msg.type === 'keep-alive') return;
 
     switch (msg.type) {
       case 'register': {
         if (!msg.id) break;
-        // Kill stale socket first; delete BEFORE terminate so the stale
-        // socket's close handler doesn't re-delete the new registration
+        const isHost = isLocalIP(ip);
+        // Kill stale socket first
         if (peers.has(msg.id)) {
           const stale = peers.get(msg.id);
           peers.delete(msg.id);
           try { stale.ws.terminate(); } catch {}
         }
         peerId = msg.id;
-        peers.set(peerId, { ws, id: peerId, name: msg.name || 'Anonymous', avatar: msg.avatar || '👤', ip });
-        ws.send(JSON.stringify({ type: 'welcome', yourId: peerId, yourIp: ip }));
-        // BUG FIX: exclude registering peer from their own peer-list
+        peers.set(peerId, { ws, id: peerId, name: msg.name || 'Anonymous', avatar: msg.avatar || '👤', ip, isHost });
+        ws.send(JSON.stringify({ type: 'welcome', yourId: peerId, yourIp: ip, isHost }));
         ws.send(JSON.stringify({ type: 'peer-list', peers: peerSnapshot(peerId) }));
         broadcast({ type: 'peer-joined', id: peerId, name: msg.name, avatar: msg.avatar }, peerId);
         log(`[+] ${msg.name} (${peerId}) from ${ip}  [${peers.size} online]`);
@@ -539,11 +662,13 @@ wss.on('connection', (ws, req) => {
       case 'call-accepted':
       case 'call-declined':
       case 'call-ended':
+        // STRICTION: Validate payload types before relaying
+        if (typeof msg.to !== 'string' || typeof msg.from !== 'string') break;
         if (msg.to && peers.has(msg.to)) sendTo(msg.to, { ...msg, from: peerId });
         break;
 
       case 'group-message':
-        if (Array.isArray(msg.members))
+        if (Array.isArray(msg.members) && msg.members.length < 50) // STRICTION: Cap group fanout
           msg.members.filter(id => id !== peerId && peers.has(id)).forEach(id => sendTo(id, msg));
         break;
 
@@ -580,6 +705,43 @@ wss.on('connection', (ws, req) => {
         announcements.push(entry);
         saveAnnouncements();
         broadcast({ type: 'new-announcement', data: entry });
+        break;
+      }
+
+      case 'get-security':
+        if (peers.get(peerId)?.isHost) {
+          ws.send(JSON.stringify({ type: 'security-state', enabled: protectedMode, devices: Array.from(allowedMacs, ([mac, name]) => ({ mac, name })) }));
+        }
+        break;
+        
+      case 'toggle-security':
+        if (peers.get(peerId)?.isHost) {
+          protectedMode = !!msg.enabled;
+          saveMacConfig();
+          broadcast({ type: 'security-state', enabled: protectedMode, devices: Array.from(allowedMacs, ([mac, name]) => ({ mac, name })) });
+        }
+        break;
+        
+      case 'add-mac': {
+        if (peers.get(peerId)?.isHost) {
+          const cleanMac = normalizeMac(msg.mac);
+          if (cleanMac) {
+            allowedMacs.set(cleanMac, msg.name || 'Unnamed Device');
+            saveMacConfig();
+          }
+          broadcast({ type: 'security-state', enabled: protectedMode, devices: Array.from(allowedMacs, ([mac, name]) => ({ mac, name })) });
+        }
+        break;
+      }
+      
+      case 'remove-mac': {
+        if (peers.get(peerId)?.isHost) {
+          if (msg.mac && msg.mac !== 'localhost') {
+            allowedMacs.delete(msg.mac);
+            saveMacConfig();
+          }
+          broadcast({ type: 'security-state', enabled: protectedMode, devices: Array.from(allowedMacs, ([mac, name]) => ({ mac, name })) });
+        }
         break;
       }
     }
@@ -625,7 +787,30 @@ wss.on('close', () => clearInterval(heartbeat));
 function startSTUN() {
   const sock = dgram.createSocket('udp4');
 
-  sock.on('message', (msg, rinfo) => {
+  // STRICTION: Simple UDP rate limiting
+  const udpRateLimits = new Map();
+
+  // Prevent memory leak from IP tracking
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, limit] of udpRateLimits.entries()) {
+      if (now - limit.time > 5000) udpRateLimits.delete(ip);
+    }
+  }, 60000).unref();
+
+  sock.on('message', async (msg, rinfo) => {
+    if (protectedMode) {
+      const mac = await getMac(rinfo.address);
+      if (!mac || !allowedMacs.has(mac)) return; // Silently drop
+    }
+
+    const now = Date.now();
+    const limit = udpRateLimits.get(rinfo.address) || { count: 0, time: now };
+    if (now - limit.time > 1000) { limit.count = 0; limit.time = now; }
+    limit.count++;
+    udpRateLimits.set(rinfo.address, limit);
+    if (limit.count > 20) return; // Drop if exceeding 20 STUN req/sec per IP
+
     totalNetworkRx += msg.length;
     if (msg.length < 20) return;
     const msgType = msg.readUInt16BE(0);
