@@ -1,0 +1,29 @@
+  STUN  listening on UDP  :3478
+  WS    listening on  wss://0.0.0.0:8444
+
+
+  ╔══════════════════════════════════════════════════════════╗
+  ║         LanLink v9 — Offline LAN Messenger              ║
+  ║  🔒 HTTPS+WSS — calls ENABLED on all devices!     ║
+  ╚══════════════════════════════════════════════════════════╝
+
+  TCP app port: 8444  (preferred 8443 was busy)
+  UDP STUN port: 3478
+
+  ┌─ OPEN ON EVERY DEVICE ───────────────────────────────────┐
+  │  [Wi-Fi]  172.17.229.130
+  │   🌐  https://172.17.229.130:8444
+  │   🔌  wss://172.17.229.130:8444  ← server address field
+  └──────────────────────────────────────────────────────────┘
+
+  ── FIREWALL (most common issue) ───────────────────────────
+  Windows — Administrator PowerShell:
+    netsh advfirewall firewall add rule name="LanLink-App"  dir=in action=allow protocol=tcp localport=8444
+    netsh advfirewall firewall add rule name="LanLink-STUN" dir=in action=allow protocol=udp localport=3478
+
+  macOS:  System Settings → Firewall → allow Node
+  Linux:  sudo ufw allow 8444/tcp && sudo ufw allow 3478/udp
+
+  📁  Uploads: C:\Users\nirma\Desktop\temp\Personal\ArmyProjects\Offline-LanLink\uploads
+  Ctrl+C to stop.
+

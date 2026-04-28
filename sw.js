@@ -44,11 +44,13 @@ let _reconTimer= null;
 let _reconDelay= 3000;
 
 // ── IndexedDB helper ────────────────────────────────────────────────────
+let _dbInstance = null;
 function openDB() {
+  if (_dbInstance) return Promise.resolve(_dbInstance);
   return new Promise((resolve, reject) => {
     const r = indexedDB.open(DB_NAME, DB_VERSION);
     r.onerror = () => reject(r.error);
-    r.onsuccess = e => resolve(e.target.result);
+    r.onsuccess = e => { _dbInstance = e.target.result; resolve(_dbInstance); };
     r.onupgradeneeded = e => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(CONV_STORE))
@@ -104,23 +106,6 @@ async function dbDeleteKey(storeName, key) {
       req.onerror   = () => rej(req.error);
     });
   } catch(e) { console.warn('[SW] dbDelete error:', e); }
-}
-
-// Append a message to the peer's conversation in IndexedDB
-// (mirrors what the page does — so the page sees it on wake)
-async function appendConversation(pid, msg) {
-  try {
-    const db  = await openDB();
-    const existing = await new Promise((res, rej) => {
-      const req = db.transaction(CONV_STORE,'readonly').objectStore(CONV_STORE).get(pid);
-      req.onsuccess = () => res(req.result || []);
-      req.onerror   = () => rej(req.error);
-    });
-    // Deduplicate by id — avoid double-write if page woke up quickly
-    if (msg.id && existing.some(m => m.id === msg.id)) return;
-    const updated = [...existing, msg].slice(-300);
-    await dbPut(CONV_STORE, updated, pid);
-  } catch(e) { console.warn('[SW] appendConversation error:', e); }
 }
 
 // ── Notify all live page clients ────────────────────────────────────────
@@ -234,7 +219,8 @@ function resetPong() { clearTimeout(_pongTimer); }
 async function handleServerMsg(msg) {
   // Signals we don't need to handle in SW
   if (['welcome','peer-list','peer-joined','peer-left',
-       'offer','answer','ice-candidate','server-shutdown'].includes(msg.type)) {
+       'offer','answer','ice-candidate','server-shutdown',
+       'announcements'].includes(msg.type)) {
     // Forward to page so WebRTC state stays current when page wakes
     await postToClients({ type: 'sw-signal', signal: msg });
     return;
@@ -273,6 +259,20 @@ async function handleServerMsg(msg) {
   // the WebRTC data channel couldn't be established
   if (msg.type === 'sw-direct') {
     await handleDirectMessage(msg);
+    return;
+  }
+
+  if (msg.type === 'new-announcement') {
+    await postToClients({ type: 'sw-signal', signal: msg });
+    const body = (!msg.data.type || msg.data.type === 'text')
+      ? (msg.data.text || '').substring(0, 100)
+      : `📎 ${msg.data.fileName || msg.data.folderName || 'Attachment'}`;
+    await showNotification(
+      `📢 Announcement: ${msg.data.senderName}`,
+      body,
+      'announcement',
+      { action: 'open-board' }
+    );
     return;
   }
 }
@@ -319,9 +319,6 @@ async function handleGroupMessage(msg) {
       direction: 'in',
     };
 
-    // Save to conversations store so page sees it on wake
-    await appendConversation(gid, msgObj);
-
     // Put in inbox for the page to process (unread count, render, etc.)
     const inboxEntry = {
       swType    : 'group-message',
@@ -337,9 +334,9 @@ async function handleGroupMessage(msg) {
 
     // Show notification if page is in background
     const title = `[${payload.groupName || 'Group'}] ${payload.senderName || from}`;
-    const body  = payload.type === 'text'
+    const body  = payload.e2ee ? '🔒 Encrypted message' : (payload.type === 'text'
       ? (payload.text || '').substring(0, 100)
-      : `📎 ${payload.fileName || 'file'}`;
+      : `📎 ${payload.fileName || 'file'}`);
     await showNotification(title, body, 'group-' + gid, {
       action: 'open-chat',
       pid   : gid,
@@ -361,8 +358,6 @@ async function handleDirectMessage(msg) {
     direction: 'in',
   };
 
-  await appendConversation(pid, msgObj);
-
   const inboxEntry = {
     swType    : 'direct-message',
     pid,
@@ -374,9 +369,9 @@ async function handleDirectMessage(msg) {
   await postToClients({ type: 'sw-message', pid, payload: msgObj });
 
   const title = msg.senderName || 'New message';
-  const body  = payload.type === 'text'
+  const body  = payload.e2ee ? '🔒 Encrypted message' : (payload.type === 'text'
     ? (payload.text || '').substring(0, 100)
-    : `📎 ${payload.fileName || 'file'}`;
+    : `📎 ${payload.fileName || 'file'}`);
   await showNotification(title, body, 'peer-' + pid, {
     action: 'open-chat',
     pid,
