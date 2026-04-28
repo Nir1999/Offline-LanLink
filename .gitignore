@@ -1,0 +1,25 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# LanLink Application Data
+uploads/
+announcements.json
+tmp_server_stdout.txt
+*.log
+
+# Security / Certificates
+# NEVER commit private keys to version control!
+key.pem
+cert.pem
+
+# Compiled Executables (from 'pkg')
+dist/
+*.exe
+
+# OS / Editor specific
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
