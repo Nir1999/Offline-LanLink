@@ -357,6 +357,19 @@ async function handleHTTP(req, res) {
     return;
   }
 
+  // ── Generic Static Files ───────────────────────────────────────
+  if (pathname.endsWith('.css') || pathname.endsWith('.js')) {
+    const ext = pathname.substring(pathname.lastIndexOf('.'));
+    const filePath = path.join(__dirname, pathname);
+    // Let SW be handled by its specific block above if it exists, but just in case:
+    if (pathname !== '/sw.js' && fs.existsSync(filePath)) {
+      const type = ext === '.css' ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8';
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+      res.end(fs.readFileSync(filePath));
+      return;
+    }
+  }
+
   // ── PWA icons — generated as inline SVG so no image files needed ─
   if (pathname === '/icon-192.png' || pathname === '/icon-96.png') {
     const size = pathname === '/icon-192.png' ? 192 : 96;

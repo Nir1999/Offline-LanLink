@@ -6,7 +6,8 @@
   "pkg": {
     "assets": [
       "app.html",
-      "sw.js"
+      "*.css",
+      "*.js"
     ],
     "targets": [
       "node18-win-x64",
