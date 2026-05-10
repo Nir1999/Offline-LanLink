@@ -116,11 +116,13 @@ async function handleSignal(msg){
       const retInp = document.getElementById('cfg-retention');
       const annInp = document.getElementById('cfg-max-announcements');
       const grpInp = document.getElementById('cfg-allow-groups');
+      const autoBackupInp = document.getElementById('cfg-auto-backup');
       const sizeLbl = document.getElementById('cfg-uploads-size');
       if (mbInp && msg.config) mbInp.value = msg.config.maxUploadMb;
       if (retInp && msg.config) retInp.value = msg.config.retentionDays;
       if (annInp && msg.config) annInp.value = msg.config.maxAnnouncements !== undefined ? msg.config.maxAnnouncements : 100;
       if (grpInp && msg.config) grpInp.checked = msg.config.allowGroups !== false;
+      if (autoBackupInp && msg.config) autoBackupInp.checked = msg.config.autoBackup !== false;
       if (sizeLbl && msg.uploadsSize !== undefined) sizeLbl.textContent = fmtBytes(msg.uploadsSize);
       break;
     }

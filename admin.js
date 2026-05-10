@@ -123,10 +123,11 @@ function saveServerSettings() {
   const retDays = parseInt(document.getElementById('cfg-retention').value, 10);
   const maxAnn = parseInt(document.getElementById('cfg-max-announcements').value, 10);
   const allowGrp = document.getElementById('cfg-allow-groups').checked;
+  const autoBackup = document.getElementById('cfg-auto-backup') ? document.getElementById('cfg-auto-backup').checked : false;
   if (isNaN(maxMb) || maxMb < 1) return toast('⚠️ Invalid max upload size');
   if (isNaN(retDays) || retDays < 0) return toast('⚠️ Invalid retention days');
   if (isNaN(maxAnn) || maxAnn < 1) return toast('⚠️ Invalid max announcements limit');
-  wsSend({ type: 'update-server-config', config: { maxUploadMb: maxMb, retentionDays: retDays, maxAnnouncements: maxAnn, allowGroups: allowGrp } });
+  wsSend({ type: 'update-server-config', config: { maxUploadMb: maxMb, retentionDays: retDays, maxAnnouncements: maxAnn, allowGroups: allowGrp, autoBackup: autoBackup } });
   toast('✅ Server settings saved');
 }
 function clearServerUploads() {

@@ -81,7 +81,21 @@ function setReplyTo(msg){
   App.replyTo=msg;
   document.getElementById('reply-preview').classList.add('active');
   const name=msg.from===App.me.id?'You':(App.peers.get(msg.from)||App.historyPeers.get(msg.from))?.name||'Peer';
-  document.getElementById('reply-preview-text').textContent=`${name}: ${msg.text||msg.fileName||'📎 attachment'}`;
+  
+  const previewTextEl = document.getElementById('reply-preview-text');
+  previewTextEl.innerHTML = '';
+  
+  if (msg.type === 'attachment' && (msg.mimeType || '').startsWith('image/')) {
+    const imgPreview = document.createElement('img');
+    imgPreview.src = msg.url;
+    imgPreview.style.cssText = 'height:30px;width:30px;object-fit:cover;border-radius:4px;margin-right:8px;vertical-align:middle;';
+    previewTextEl.appendChild(imgPreview);
+  }
+  
+  const textSpan = document.createElement('span');
+  textSpan.textContent = `${name}: ${msg.text||msg.fileName||msg.folderName||'📎 attachment'}`;
+  previewTextEl.appendChild(textSpan);
+  
   document.getElementById('msg-input').focus();
 }
 function cancelReply(){App.replyTo=null;document.getElementById('reply-preview').classList.remove('active');}
@@ -335,6 +349,9 @@ async function toggleVoiceMemo(){
       _recStream.getTracks().forEach(t=>t.stop());
       document.getElementById('recording-indicator').style.display='none';
       document.getElementById('msg-input').style.display='block';
+      document.getElementById('emoji-btn').style.display='';
+      document.getElementById('attach-btn').style.display='';
+      document.getElementById('send-btn').style.display='';
       const mb=document.getElementById('mic-btn');mb.textContent='🎤';mb.classList.remove('recording');
       if(_audioChunks.length===0)return;
       const blob=new Blob(_audioChunks,{type:'audio/webm'});
@@ -346,8 +363,11 @@ async function toggleVoiceMemo(){
     _mediaRecorder.start();
     _recStart=Date.now();
     document.getElementById('msg-input').style.display='none';
+    document.getElementById('emoji-btn').style.display='none';
+    document.getElementById('attach-btn').style.display='none';
+    document.getElementById('send-btn').style.display='none';
     document.getElementById('recording-indicator').style.display='flex';
-    const mb=document.getElementById('mic-btn');mb.textContent='⏹️';mb.classList.add('recording');
+    const mb=document.getElementById('mic-btn');mb.textContent='📤';mb.classList.add('recording');
     _recTimer=setInterval(()=>{
       const s=Math.floor((Date.now()-_recStart)/1000);
       document.getElementById('rec-time').textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;

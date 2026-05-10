@@ -785,6 +785,40 @@ wss.on('connection', (ws, req) => {
         }
         break;
       }
+
+      case 'get-server-config':
+        if (peers.get(peerId)?.isHost) {
+          ws.send(JSON.stringify({ type: 'server-config', config: serverConfig, uploadsSize: getUploadsSize() }));
+        }
+        break;
+
+      case 'update-server-config':
+        if (peers.get(peerId)?.isHost && msg.config) {
+          Object.assign(serverConfig, msg.config);
+          saveServerConfig();
+          broadcast({ type: 'config-update', allowGroups: serverConfig.allowGroups });
+        }
+        break;
+
+      case 'clear-uploads':
+        if (peers.get(peerId)?.isHost) {
+          try {
+            const files = fs.readdirSync(UPLOADS_DIR);
+            for (const f of files) {
+              const p = path.join(UPLOADS_DIR, f);
+              if (fs.statSync(p).isFile()) fs.unlinkSync(p);
+            }
+          } catch(e) {}
+        }
+        break;
+
+      case 'clear-announcements':
+        if (peers.get(peerId)?.isHost) {
+          announcements = [];
+          saveAnnouncements();
+          broadcast({ type: 'announcements-cleared' });
+        }
+        break;
     }
   });
 

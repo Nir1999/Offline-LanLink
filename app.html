@@ -3,12 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src *;">
+<meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="LanLink">
 <meta name="theme-color" content="#0a0a0f">
 <link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;LanLink&quot;,&quot;short_name&quot;:&quot;LanLink&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0f&quot;,&quot;theme_color&quot;:&quot;%230a0a0f&quot;,&quot;start_url&quot;:&quot;/&quot;,&quot;icons&quot;:[{&quot;src&quot;:&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%237c6aff'/%3E%3Ctext y='.9em' font-size='80' x='10'%3E📡%3C/text%3E%3C/svg%3E&quot;,&quot;sizes&quot;:&quot;any&quot;,&quot;type&quot;:&quot;image/svg+xml&quot;}]}">
 <title>LanLink — Offline LAN Chat</title>
+<link rel="preload" href="styles.css" as="style">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -24,7 +27,7 @@
     <h2>Set up your profile</h2>
     <p>Chat, call, and share files on your local network. No internet required.</p>
     <div class="input-group">
-      <label>Display Name</label>
+      <label for="username-input">Display Name</label>
       <input class="input-field" id="username-input" type="text" placeholder="Your name…" maxlength="24" autocomplete="off">
     </div>
     <div class="input-group">
@@ -43,7 +46,7 @@
       </div>
     </div>
     <div class="input-group">
-      <label>Server Address</label>
+      <label for="server-input">Server Address</label>
       <div class="server-row">
         <div class="input-group">
           <input class="input-field" id="server-input" type="text" placeholder="ws://192.168.x.x:8080" autocomplete="off">
@@ -104,7 +107,7 @@
       </div>
     </div>
     <div class="search-bar">
-      <input class="search-input" placeholder="🔍 Search…" oninput="filterPeers(this.value)">
+      <input class="search-input" placeholder="🔍 Search…" oninput="filterPeers(this.value)" aria-label="Search peers">
     </div>
     <div class="tabs">
       <div class="tab active" onclick="switchTab('chats',this)">CHATS</div>
@@ -155,17 +158,17 @@
       </div>
       <div class="chat-input-area">
         <div class="msg-input-wrap">
-          <span class="emoji-btn" onclick="toggleEmojiPanel(event)">😊</span>
-          <textarea class="msg-input" id="msg-input" rows="1" placeholder="Message…" onkeydown="handleKeydown(event)" oninput="handleTyping()"></textarea>
+          <span class="emoji-btn" id="emoji-btn" onclick="toggleEmojiPanel(event)">😊</span>
+          <textarea class="msg-input" id="msg-input" rows="1" placeholder="Message…" onkeydown="handleKeydown(event)" oninput="handleTyping()" aria-label="Type a message"></textarea>
           <div id="recording-indicator" style="display:none;flex:1;align-items:center;gap:8px;color:var(--accent3);font-weight:600;font-size:14px;padding:0 4px;">
             <span class="rec-dot">🔴</span> <span id="rec-time">0:00</span>
             <span style="flex:1;"></span>
-            <span class="reply-cancel" onclick="cancelVoiceMemo()" style="cursor:pointer;font-size:12px;color:var(--text3);padding:4px 8px;border-radius:12px;background:var(--surface3);">✕ Cancel</span>
+            <span class="reply-cancel" onclick="cancelVoiceMemo()" style="cursor:pointer;font-size:12px;color:var(--text3);padding:4px 8px;border-radius:12px;background:var(--surface3);">🛑 Cancel</span>
           </div>
-          <span class="attach-btn" onclick="document.getElementById('img-input').click()">🖼️</span>
+          <span class="attach-btn" id="attach-btn" onclick="document.getElementById('img-input').click()">🖼️</span>
           <span class="mic-btn" id="mic-btn" onclick="toggleVoiceMemo()">🎤</span>
         </div>
-        <button class="send-btn" onclick="sendMessage()">➤</button>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()" aria-label="Send message">➤</button>
       </div>
     </div>
   </div>
@@ -208,7 +211,7 @@
     <div class="call-zoom" id="call-zoom">
       <div class="call-zoom-label">CAMERA ZOOM</div>
       <div class="call-zoom-row">
-        <input type="range" id="zoom-slider" min="1" max="1" step="0.1" value="1" oninput="onZoomSliderInput(this.value)">
+        <input type="range" id="zoom-slider" min="1" max="1" step="0.1" value="1" oninput="onZoomSliderInput(this.value)" aria-label="Camera Zoom">
         <span class="call-zoom-value" id="zoom-value">1.0x</span>
       </div>
     </div>
@@ -229,7 +232,7 @@
 
 <!-- EMOJI PICKER -->
 <div id="emoji-panel">
-  <input class="ep-search" type="text" placeholder="Search emoji…" oninput="filterEmoji(this.value)">
+  <input class="ep-search" type="text" placeholder="Search emoji…" oninput="filterEmoji(this.value)" aria-label="Search emoji">
   <div class="ep-grid" id="ep-grid"></div>
 </div>
 
@@ -287,7 +290,7 @@
   <div class="group-card">
     <h3 id="group-modal-title">Create Group</h3>
     <div class="input-group">
-      <label>Group Name</label>
+      <label for="group-name-input">Group Name</label>
       <input class="input-field" id="group-name-input" type="text" placeholder="e.g. Project Team" maxlength="32" autocomplete="off">
     </div>
     <div class="input-group">
@@ -340,24 +343,24 @@
     <div id="admin-general-tab" class="admin-tab-content active">
       <div class="setting-row">
         <div class="setting-info">
-          <label>Max Upload Size</label>
+          <label for="cfg-max-mb">Max Upload Size</label>
           <span>Maximum megabytes per file upload.</span>
         </div>
-        <div class="setting-control"><input type="number" class="input-field" id="cfg-max-mb" min="1" max="10000"></div>
+        <div class="setting-control"><input type="number" class="input-field" id="cfg-max-mb" min="1" max="10000" value="50"></div>
       </div>
       <div class="setting-row">
         <div class="setting-info">
-          <label>Upload Retention</label>
+          <label for="cfg-retention">Upload Retention</label>
           <span>Days to keep files. Set 0 to disable.</span>
         </div>
-        <div class="setting-control"><input type="number" class="input-field" id="cfg-retention" min="0" max="365"></div>
+        <div class="setting-control"><input type="number" class="input-field" id="cfg-retention" min="0" max="365" value="7"></div>
       </div>
       <div class="setting-row">
         <div class="setting-info">
-          <label>Notice Board Limit</label>
+          <label for="cfg-max-announcements">Notice Board Limit</label>
           <span>Max announcements to keep.</span>
         </div>
-        <div class="setting-control"><input type="number" class="input-field" id="cfg-max-announcements" min="10" max="1000"></div>
+        <div class="setting-control"><input type="number" class="input-field" id="cfg-max-announcements" min="10" max="1000" value="100"></div>
       </div>
       <div class="setting-row">
         <div class="setting-info">
@@ -368,11 +371,20 @@
       </div>
       <div class="setting-row">
         <div class="setting-info">
-          <label>Allow Group Chats</label>
+          <label for="cfg-allow-groups">Allow Group Chats</label>
           <span>Let users create new groups.</span>
         </div>
         <div class="setting-control" style="text-align:right;">
-          <label class="switch"><input type="checkbox" id="cfg-allow-groups"><span class="slider"></span></label>
+          <label class="switch"><input type="checkbox" id="cfg-allow-groups" checked><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <label for="cfg-auto-backup">Auto Backup</label>
+          <span>Automatically backup server data.</span>
+        </div>
+        <div class="setting-control" style="text-align:right;">
+          <label class="switch"><input type="checkbox" id="cfg-auto-backup" checked><span class="slider"></span></label>
         </div>
       </div>
       <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:4px;">
@@ -389,7 +401,7 @@
     <div id="admin-security-tab" class="admin-tab-content">
       <div class="setting-row" style="padding-bottom:12px; border-bottom:1px solid var(--border);">
         <div class="setting-info">
-          <label>Protected Mode</label>
+          <label for="sec-toggle">Protected Mode</label>
           <span>Only allow whitelisted MAC addresses.</span>
         </div>
         <div class="setting-control" style="text-align:right;">
@@ -399,10 +411,10 @@
       <div id="mac-list-container" style="display:none; flex-direction:column; gap:10px;">
         <div style="display:flex; gap:8px; align-items:flex-end;">
           <div class="input-group" style="flex:1.2;">
-            <label>MAC Address</label>
+            <label for="new-mac-input">MAC Address</label>
             <input class="input-field" id="new-mac-input" placeholder="00:1A:2B:..." oninput="formatMacInput(event)">
           </div>
-          <div class="input-group" style="flex:1;"><label>Device Name</label><input class="input-field" id="new-mac-name-input" placeholder="Name"></div>
+          <div class="input-group" style="flex:1;"><label for="new-mac-name-input">Device Name</label><input class="input-field" id="new-mac-name-input" placeholder="Name"></div>
           <button class="btn-primary" style="width:auto; padding:12px 16px; height:44px;" onclick="addMacAddress()">Add</button>
         </div>
         <div id="mac-list" style="max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
@@ -414,22 +426,22 @@
 </div>
 
 <div id="toast-container"></div>
-<input type="file" id="file-input" onchange="sendFile(this)">
-<input type="file" id="img-input" accept="image/*" onchange="sendImage(this)">
-<input type="file" id="folder-input" webkitdirectory directory multiple onchange="sendFolder(this)">
-<input type="file" id="import-input" style="display:none" accept=".json" onchange="importData(this.files[0])">
+<input type="file" id="file-input" onchange="sendFile(this)" aria-label="Send file">
+<input type="file" id="img-input" accept="image/*" onchange="sendImage(this)" aria-label="Send image">
+<input type="file" id="folder-input" webkitdirectory directory multiple onchange="sendFolder(this)" aria-label="Send folder">
+<input type="file" id="import-input" style="display:none" accept=".json" onchange="importData(this.files[0])" aria-label="Import data">
 
-<script src="e2ee.js"></script>
-<script src="idb.js"></script>
-<script src="profile.js"></script>
-<script src="audio.js"></script>
-<script src="setup.js"></script>
-<script src="sw_handler.js"></script>
-<script src="webrtc.js"></script>
-<script src="group.js"></script>
-<script src="admin.js"></script>
-<script src="chat.js"></script>
-<script src="ui.js"></script>
-<script src="app.js"></script>
+<script src="e2ee.js" defer></script>
+<script src="idb.js" defer></script>
+<script src="profile.js" defer></script>
+<script src="audio.js" defer></script>
+<script src="setup.js" defer></script>
+<script src="sw_handler.js" defer></script>
+<script src="webrtc.js" defer></script>
+<script src="group.js" defer></script>
+<script src="admin.js" defer></script>
+<script src="chat.js" defer></script>
+<script src="ui.js" defer></script>
+<script src="app.js" defer></script>
 </body>
 </html>

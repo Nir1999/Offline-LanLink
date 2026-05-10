@@ -1,0 +1,7 @@
+{
+  "maxUploadMb": 500,
+  "retentionDays": 0,
+  "maxAnnouncements": 100,
+  "allowGroups": true,
+  "autoBackup": true
+}
